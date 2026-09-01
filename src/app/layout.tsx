@@ -7,7 +7,7 @@ import { ToastProvider } from "@/components/ui";
 import { BottomNav, Navbar } from "@/components/nav";
 
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL ?? "https://ridematecampus.com"),
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || "https://ridematecampus.com"),
   title: {
     default: "RideMate Campus — Student Carpooling Made Safer",
     template: "%s | RideMate Campus",
