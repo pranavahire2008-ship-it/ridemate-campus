@@ -87,9 +87,13 @@ export async function POST(request: Request) {
     const vehicleType = String(formData.get("vehicleType") ?? "").trim();
     const licenceFile = formData.get("licenceDocument");
     const regFile = formData.get("vehicleRegDocument");
+    const identityFile = formData.get("identityDocument");
 
     if (!vehicleNumber || vehicleNumber.length < 4) return fail("Enter your vehicle number.", 422);
     if (!vehicleType) return fail("Select your vehicle type.", 422);
+    if (!identityFile || !(identityFile instanceof File)) {
+      return fail("Upload your Aadhaar or other identity proof.", 422);
+    }
 
     const user = auth.user;
     async function saveFile(file: unknown, prefix: string): Promise<string> {
@@ -107,9 +111,11 @@ export async function POST(request: Request) {
 
     let licencePath: string;
     let regPath: string;
+    let identityPath: string;
     try {
       licencePath = await saveFile(licenceFile, "dl");
       regPath = await saveFile(regFile, "rc");
+      identityPath = await saveFile(identityFile, "id");
     } catch (err) {
       return fail(err instanceof Error ? err.message : "File upload failed.", 422);
     }
@@ -120,6 +126,8 @@ export async function POST(request: Request) {
       vehicleNumber,
       vehicleType,
       vehicleRegDocumentPath: regPath,
+      identityDocumentPath: identityPath,
+      identityDocumentType: "aadhaar",
       status: "PENDING",
     });
 
