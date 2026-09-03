@@ -70,6 +70,17 @@ export async function GET(
         authorized = dvRows2[0].userId === user.id || isAdmin(user);
       }
     }
+    if (!filePath) {
+      const dvRows3 = await db
+        .select()
+        .from(driverVerifications)
+        .where(eq(driverVerifications.identityDocumentPath, safeName))
+        .limit(1);
+      if (dvRows3[0]) {
+        filePath = join(DRIVER_DIR, safeName);
+        authorized = dvRows3[0].userId === user.id || isAdmin(user);
+      }
+    }
 
     if (!filePath) return fail("Document not found.", 404);
     if (!authorized) return fail("You do not have permission to view this document.", 403);
