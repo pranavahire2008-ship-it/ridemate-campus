@@ -93,6 +93,8 @@ export const driverVerifications = pgTable(
     vehicleNumber: varchar("vehicle_number", { length: 30 }).notNull(),
     vehicleType: varchar("vehicle_type", { length: 30 }).notNull(),
     vehicleRegDocumentPath: varchar("vehicle_reg_document_path", { length: 300 }).notNull(),
+    identityDocumentPath: varchar("identity_document_path", { length: 300 }),
+    identityDocumentType: varchar("identity_document_type", { length: 20 }).default("aadhaar"),
     // NOT_SUBMITTED | PENDING | APPROVED | REJECTED
     status: varchar("status", { length: 20 }).notNull().default("PENDING"),
     rejectionReason: varchar("rejection_reason", { length: 400 }),
