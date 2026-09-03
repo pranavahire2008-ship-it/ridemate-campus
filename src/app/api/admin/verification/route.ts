@@ -62,6 +62,7 @@ export async function GET() {
         vehicleType: r.dv.vehicleType,
         licenceDocumentPath: r.dv.licenceDocumentPath,
         vehicleRegDocumentPath: r.dv.vehicleRegDocumentPath,
+        identityDocumentPath: r.dv.identityDocumentPath,
         status: r.dv.status,
         rejectionReason: r.dv.rejectionReason,
         submittedAt: r.dv.submittedAt.toISOString(),
