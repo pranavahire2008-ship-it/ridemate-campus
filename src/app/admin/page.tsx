@@ -80,12 +80,32 @@ type Overview = {
   }[];
 };
 
+type DriverVerificationRow = {
+  id: number;
+  userId: number;
+  userName: string;
+  userEmail: string;
+  vehicleNumber: string;
+  vehicleType: string;
+  licenceDocumentPath: string;
+  vehicleRegDocumentPath: string;
+  identityDocumentPath: string | null;
+  status: string;
+  rejectionReason: string | null;
+  submittedAt: string;
+  reviewedAt: string | null;
+};
+
 export default function AdminPage() {
   const { user, loading: sessionLoading } = useSession();
   const { push } = useToast();
   const [data, setData] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(true);
   const [denied, setDenied] = useState(false);
+  const [driverRequests, setDriverRequests] = useState<DriverVerificationRow[]>([]);
+  const [driverRequestsLoading, setDriverRequestsLoading] = useState(true);
+  const [rejectingId, setRejectingId] = useState<number | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -108,6 +128,46 @@ export default function AdminPage() {
   useEffect(() => {
     if (!sessionLoading) void load();
   }, [sessionLoading, load]);
+
+  const loadDriverRequests = useCallback(async () => {
+    setDriverRequestsLoading(true);
+    try {
+      const res = await fetch("/api/admin/verification", { cache: "no-store" });
+      if (!res.ok) return;
+      const body = (await res.json()) as { driverVerifications?: DriverVerificationRow[] };
+      setDriverRequests(body.driverVerifications ?? []);
+    } finally {
+      setDriverRequestsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!sessionLoading) void loadDriverRequests();
+  }, [sessionLoading, loadDriverRequests]);
+
+  const driverAction = async (
+    verificationId: number,
+    action: "APPROVE" | "REJECT",
+    rejectionReason?: string,
+  ) => {
+    const res = await fetch("/api/admin/verification", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "driver", verificationId, action, rejectionReason }),
+    });
+    if (res.ok) {
+      push({
+        title: action === "APPROVE" ? "Driver approved" : "Driver rejected",
+        tone: action === "APPROVE" ? "success" : "error",
+      });
+      setRejectingId(null);
+      setRejectReason("");
+      await loadDriverRequests();
+    } else {
+      const body = (await res.json()) as { error?: string };
+      push({ title: "Action failed", body: body.error, tone: "error" });
+    }
+  };
 
   const act = async (payload: Record<string, unknown>, message: string) => {
     const res = await fetch("/api/admin/actions", {
@@ -229,6 +289,114 @@ export default function AdminPage() {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+      </section>
+
+      <section className="mt-10">
+        <h2 className="text-2xl font-extrabold tracking-tight text-slate-900">
+          Driver document verification
+        </h2>
+        <p className="mt-1.5 text-sm text-slate-600">
+          Review licence, RC and Aadhaar/ID before approving a student to offer rides.
+        </p>
+        {driverRequestsLoading ? (
+          <div className="mt-4">
+            <Spinner label="Loading driver requests…" />
+          </div>
+        ) : driverRequests.filter((r) => r.status === "PENDING").length === 0 ? (
+          <p className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-white p-6 text-center text-sm text-slate-500">
+            No driver verification requests waiting.
+          </p>
+        ) : (
+          <div className="mt-4 space-y-3">
+            {driverRequests
+              .filter((r) => r.status === "PENDING")
+              .map((row) => (
+                <div
+                  key={row.id}
+                  className="rounded-3xl border border-slate-100 bg-white p-4 shadow-card"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-slate-900">{row.userName}</p>
+                      <p className="text-xs text-slate-500">
+                        {row.userEmail} · {row.vehicleType} · {row.vehicleNumber}
+                      </p>
+                    </div>
+                    <Badge tone="amber">{row.status}</Badge>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold">
+                    <a
+                      href={`/api/verification/document/${row.licenceDocumentPath}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded-xl bg-slate-100 px-3 py-1.5 text-slate-700 hover:bg-slate-200"
+                    >
+                      View licence
+                    </a>
+                    <a
+                      href={`/api/verification/document/${row.vehicleRegDocumentPath}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded-xl bg-slate-100 px-3 py-1.5 text-slate-700 hover:bg-slate-200"
+                    >
+                      View RC
+                    </a>
+                    {row.identityDocumentPath ? (
+                      <a
+                        href={`/api/verification/document/${row.identityDocumentPath}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded-xl bg-slate-100 px-3 py-1.5 text-slate-700 hover:bg-slate-200"
+                      >
+                        View Aadhaar/ID
+                      </a>
+                    ) : null}
+                  </div>
+
+                  {rejectingId === row.id ? (
+                    <div className="mt-3 space-y-2">
+                      <textarea
+                        value={rejectReason}
+                        onChange={(e) => setRejectReason(e.target.value)}
+                        placeholder="Reason for rejection (shown to the driver)"
+                        className="w-full rounded-xl border border-slate-200 p-2.5 text-sm"
+                        rows={2}
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          onClick={() => driverAction(row.id, "REJECT", rejectReason)}
+                        >
+                          Confirm reject
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => {
+                            setRejectingId(null);
+                            setRejectReason("");
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-3 flex gap-2">
+                      <Button size="sm" variant="success" onClick={() => driverAction(row.id, "APPROVE")}>
+                        Approve
+                      </Button>
+                      <Button size="sm" variant="danger" onClick={() => setRejectingId(row.id)}>
+                        Reject
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              ))}
           </div>
         )}
       </section>
