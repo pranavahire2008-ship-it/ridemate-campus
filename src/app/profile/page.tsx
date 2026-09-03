@@ -19,6 +19,21 @@ import { COLLEGES, formatDatePretty, LOCALITIES } from "@/lib/locations";
 import { useSession } from "@/components/session-provider";
 import type { BlockItemDTO, PublicUserDTO, ReviewItem } from "@/lib/types";
 
+type DriverVerificationInfo = {
+  driverVerificationStatus: string | null;
+  driverVerified: boolean;
+  studentVerified: boolean;
+  submissions: {
+    id: number;
+    vehicleNumber: string;
+    vehicleType: string;
+    status: string;
+    rejectionReason: string | null;
+    submittedAt: string;
+    reviewedAt: string | null;
+  }[];
+};
+
 export default function ProfilePage() {
   const { user, refresh } = useSession();
   const { push } = useToast();
@@ -28,6 +43,13 @@ export default function ProfilePage() {
   const [editOpen, setEditOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [blocks, setBlocks] = useState<BlockItemDTO[]>([]);
+  const [driverInfo, setDriverInfo] = useState<DriverVerificationInfo | null>(null);
+  const [driverLoading, setDriverLoading] = useState(true);
+  const [driverSubmitting, setDriverSubmitting] = useState(false);
+  const [driverForm, setDriverForm] = useState({ vehicleNumber: "", vehicleType: "bike" });
+  const [licenceFile, setLicenceFile] = useState<File | null>(null);
+  const [regFile, setRegFile] = useState<File | null>(null);
+  const [identityFile, setIdentityFile] = useState<File | null>(null);
   const [form, setForm] = useState({
     fullName: "",
     phone: "",
@@ -77,6 +99,58 @@ export default function ProfilePage() {
       }
     })();
   }, [user]);
+
+  const loadDriverInfo = useCallback(async () => {
+    setDriverLoading(true);
+    try {
+      const res = await fetch("/api/verification/driver", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = (await res.json()) as DriverVerificationInfo;
+      setDriverInfo(data);
+    } finally {
+      setDriverLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (user) void loadDriverInfo();
+    else setDriverLoading(false);
+  }, [user, loadDriverInfo]);
+
+  const submitDriverVerification = async () => {
+    if (!driverForm.vehicleNumber.trim()) {
+      push({ title: "Enter your vehicle number", tone: "error" });
+      return;
+    }
+    if (!licenceFile || !regFile || !identityFile) {
+      push({ title: "Upload licence, RC and Aadhaar/ID documents", tone: "error" });
+      return;
+    }
+    setDriverSubmitting(true);
+    try {
+      const fd = new FormData();
+      fd.append("vehicleNumber", driverForm.vehicleNumber.trim());
+      fd.append("vehicleType", driverForm.vehicleType);
+      fd.append("licenceDocument", licenceFile);
+      fd.append("vehicleRegDocument", regFile);
+      fd.append("identityDocument", identityFile);
+
+      const res = await fetch("/api/verification/driver", { method: "POST", body: fd });
+      const data = (await res.json()) as { error?: string; message?: string };
+      if (!res.ok) {
+        push({ title: "Could not submit", body: data.error, tone: "error" });
+        return;
+      }
+      push({ title: "Submitted for review", body: data.message, tone: "success" });
+      setLicenceFile(null);
+      setRegFile(null);
+      setIdentityFile(null);
+      await loadDriverInfo();
+      await refresh();
+    } finally {
+      setDriverSubmitting(false);
+    }
+  };
 
   const unblock = async (id: number) => {
     const res = await fetch("/api/blocks", {
@@ -222,6 +296,106 @@ export default function ProfilePage() {
           </div>
         </div>
       </div>
+
+      <section className="mt-8">
+        <h2 className="text-2xl font-extrabold tracking-tight text-slate-900">Driver verification</h2>
+        <p className="mt-1.5 text-sm text-slate-600">
+          Upload your driving licence, vehicle RC and Aadhaar/ID to get approved as a driver and start
+          offering rides.
+        </p>
+
+        {driverLoading ? (
+          <div className="mt-4">
+            <Spinner label="Loading driver status…" />
+          </div>
+        ) : !driverInfo?.studentVerified ? (
+          <p className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-white p-6 text-center text-sm text-slate-500">
+            Complete student verification first (add a valid student ID above) before applying as a
+            driver.
+          </p>
+        ) : driverInfo.driverVerificationStatus === "APPROVED" ? (
+          <div className="mt-4 rounded-2xl border border-mint-200 bg-mint-50 p-5">
+            <Badge tone="mint" className="px-3 py-1.5 text-xs">
+              ✓ Verified driver
+            </Badge>
+            <p className="mt-2 text-sm text-slate-600">You can offer rides any time.</p>
+          </div>
+        ) : driverInfo.driverVerificationStatus === "PENDING" ? (
+          <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-5">
+            <Badge tone="amber" className="px-3 py-1.5 text-xs">
+              Under review
+            </Badge>
+            <p className="mt-2 text-sm text-slate-600">
+              Your documents were submitted and are waiting for admin approval.
+            </p>
+          </div>
+        ) : (
+          <div className="mt-4 space-y-4 rounded-2xl border border-slate-100 bg-white p-5 shadow-card">
+            {driverInfo.driverVerificationStatus === "REJECTED" && driverInfo.submissions[0] ? (
+              <p className="rounded-xl bg-red-50 px-3.5 py-3 text-xs leading-relaxed text-red-700">
+                Your last submission was rejected
+                {driverInfo.submissions[0].rejectionReason
+                  ? `: ${driverInfo.submissions[0].rejectionReason}`
+                  : "."}{" "}
+                Please fix the issue and resubmit below.
+              </p>
+            ) : null}
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Vehicle number">
+                <Input
+                  value={driverForm.vehicleNumber}
+                  onChange={(e) =>
+                    setDriverForm({ ...driverForm, vehicleNumber: e.target.value.toUpperCase() })
+                  }
+                  placeholder="MH15AB1234"
+                />
+              </Field>
+              <Field label="Vehicle type">
+                <Select
+                  value={driverForm.vehicleType}
+                  onChange={(e) => setDriverForm({ ...driverForm, vehicleType: e.target.value })}
+                >
+                  <option value="bike">Bike</option>
+                  <option value="scooter">Scooter</option>
+                  <option value="car">Car</option>
+                </Select>
+              </Field>
+            </div>
+
+            <Field label="Driving licence (JPG, PNG or PDF, max 5MB)">
+              <input
+                type="file"
+                accept=".jpg,.jpeg,.png,.pdf"
+                onChange={(e) => setLicenceFile(e.target.files?.[0] ?? null)}
+                className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-brand-50 file:px-3 file:py-2 file:text-xs file:font-bold file:text-brand-700"
+              />
+            </Field>
+
+            <Field label="Vehicle RC / registration document (JPG, PNG or PDF, max 5MB)">
+              <input
+                type="file"
+                accept=".jpg,.jpeg,.png,.pdf"
+                onChange={(e) => setRegFile(e.target.files?.[0] ?? null)}
+                className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-brand-50 file:px-3 file:py-2 file:text-xs file:font-bold file:text-brand-700"
+              />
+            </Field>
+
+            <Field label="Aadhaar or other identity proof (JPG, PNG or PDF, max 5MB)">
+              <input
+                type="file"
+                accept=".jpg,.jpeg,.png,.pdf"
+                onChange={(e) => setIdentityFile(e.target.files?.[0] ?? null)}
+                className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-brand-50 file:px-3 file:py-2 file:text-xs file:font-bold file:text-brand-700"
+              />
+            </Field>
+
+            <Button full loading={driverSubmitting} onClick={submitDriverVerification}>
+              Submit for verification
+            </Button>
+          </div>
+        )}
+      </section>
 
       <section className="mt-8">
         <h2 className="text-2xl font-extrabold tracking-tight text-slate-900">Blocked students</h2>
