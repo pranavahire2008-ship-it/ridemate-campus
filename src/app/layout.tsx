@@ -5,6 +5,7 @@ import "./globals.css";
 import { SessionProvider } from "@/components/session-provider";
 import { ToastProvider } from "@/components/ui";
 import { BottomNav, Navbar } from "@/components/nav";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || "https://ridematecampus.com"),
@@ -70,6 +71,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             </div>
           </ToastProvider>
         </SessionProvider>
+        <SpeedInsights />
       </body>
     </html>
   );
