@@ -50,6 +50,23 @@ export default function ProfilePage() {
   const [licenceFile, setLicenceFile] = useState<File | null>(null);
   const [regFile, setRegFile] = useState<File | null>(null);
   const [identityFile, setIdentityFile] = useState<File | null>(null);
+  const [payoutAccount, setPayoutAccount] = useState<{
+    method: string;
+    upiId: string | null;
+    accountHolderName: string | null;
+    bankAccountLast4: string | null;
+    bankIfsc: string | null;
+    verified: boolean;
+  } | null>(null);
+  const [payoutLoading, setPayoutLoading] = useState(true);
+  const [payoutSaving, setPayoutSaving] = useState(false);
+  const [payoutMethod, setPayoutMethod] = useState<"UPI" | "BANK_ACCOUNT">("UPI");
+  const [payoutForm, setPayoutForm] = useState({
+    upiId: "",
+    accountHolderName: "",
+    bankAccountNumber: "",
+    bankIfsc: "",
+  });
   const [form, setForm] = useState({
     fullName: "",
     phone: "",
@@ -116,6 +133,80 @@ export default function ProfilePage() {
     if (user) void loadDriverInfo();
     else setDriverLoading(false);
   }, [user, loadDriverInfo]);
+
+  const loadPayoutAccount = useCallback(async () => {
+    setPayoutLoading(true);
+    try {
+      const res = await fetch("/api/driver/payout-account", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = (await res.json()) as { account: typeof payoutAccount };
+      setPayoutAccount(data.account);
+      if (data.account) {
+        setPayoutMethod(data.account.method === "BANK_ACCOUNT" ? "BANK_ACCOUNT" : "UPI");
+        setPayoutForm({
+          upiId: data.account.upiId ?? "",
+          accountHolderName: data.account.accountHolderName ?? "",
+          bankAccountNumber: "",
+          bankIfsc: data.account.bankIfsc ?? "",
+        });
+      }
+    } finally {
+      setPayoutLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (user) void loadPayoutAccount();
+    else setPayoutLoading(false);
+  }, [user, loadPayoutAccount]);
+
+  const savePayoutAccount = async () => {
+    if (!payoutForm.accountHolderName.trim()) {
+      push({ title: "Enter the account holder's name", tone: "error" });
+      return;
+    }
+    if (payoutMethod === "UPI" && !payoutForm.upiId.trim()) {
+      push({ title: "Enter your UPI ID", tone: "error" });
+      return;
+    }
+    if (
+      payoutMethod === "BANK_ACCOUNT" &&
+      (!payoutForm.bankAccountNumber.trim() || !payoutForm.bankIfsc.trim())
+    ) {
+      push({ title: "Enter your bank account number and IFSC", tone: "error" });
+      return;
+    }
+    setPayoutSaving(true);
+    try {
+      const body =
+        payoutMethod === "UPI"
+          ? {
+              method: "UPI",
+              upiId: payoutForm.upiId.trim(),
+              accountHolderName: payoutForm.accountHolderName.trim(),
+            }
+          : {
+              method: "BANK_ACCOUNT",
+              accountHolderName: payoutForm.accountHolderName.trim(),
+              bankAccountNumber: payoutForm.bankAccountNumber.trim(),
+              bankIfsc: payoutForm.bankIfsc.trim(),
+            };
+      const res = await fetch("/api/driver/payout-account", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = (await res.json()) as { error?: string; message?: string };
+      if (!res.ok) {
+        push({ title: "Could not save", body: data.error, tone: "error" });
+        return;
+      }
+      push({ title: "Payout details saved", tone: "success" });
+      await loadPayoutAccount();
+    } finally {
+      setPayoutSaving(false);
+    }
+  };
 
   const submitDriverVerification = async () => {
     if (!driverForm.vehicleNumber.trim()) {
@@ -396,6 +487,84 @@ export default function ProfilePage() {
           </div>
         )}
       </section>
+
+      {driverInfo?.driverVerificationStatus === "APPROVED" ? (
+        <section className="mt-8">
+          <h2 className="text-2xl font-extrabold tracking-tight text-slate-900">Payout account</h2>
+          <p className="mt-1.5 text-sm text-slate-600">
+            Add your UPI ID or bank account so your ride earnings can be sent to you.
+          </p>
+
+          {payoutLoading ? (
+            <div className="mt-4">
+              <Spinner label="Loading payout details…" />
+            </div>
+          ) : (
+            <div className="mt-4 space-y-4 rounded-2xl border border-slate-100 bg-white p-5 shadow-card">
+              {payoutAccount ? (
+                <p className="rounded-xl bg-brand-50 px-3.5 py-3 text-xs leading-relaxed text-slate-600">
+                  Currently saved: {payoutAccount.method === "UPI" ? payoutAccount.upiId : `•••• ${payoutAccount.bankAccountLast4} (${payoutAccount.bankIfsc})`}.
+                  {payoutAccount.verified ? " Verified." : " Not yet verified — will be checked before first payout."}
+                </p>
+              ) : (
+                <p className="rounded-xl bg-amber-50 px-3.5 py-3 text-xs leading-relaxed text-amber-700">
+                  No payout account added yet. Add one so you can be paid for completed rides.
+                </p>
+              )}
+
+              <Field label="Payout method">
+                <Select
+                  value={payoutMethod}
+                  onChange={(e) => setPayoutMethod(e.target.value as "UPI" | "BANK_ACCOUNT")}
+                >
+                  <option value="UPI">UPI</option>
+                  <option value="BANK_ACCOUNT">Bank account</option>
+                </Select>
+              </Field>
+
+              <Field label="Account holder name">
+                <Input
+                  value={payoutForm.accountHolderName}
+                  onChange={(e) => setPayoutForm({ ...payoutForm, accountHolderName: e.target.value })}
+                />
+              </Field>
+
+              {payoutMethod === "UPI" ? (
+                <Field label="UPI ID">
+                  <Input
+                    value={payoutForm.upiId}
+                    onChange={(e) => setPayoutForm({ ...payoutForm, upiId: e.target.value })}
+                    placeholder="yourname@upi"
+                  />
+                </Field>
+              ) : (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label="Bank account number">
+                    <Input
+                      value={payoutForm.bankAccountNumber}
+                      onChange={(e) =>
+                        setPayoutForm({ ...payoutForm, bankAccountNumber: e.target.value })
+                      }
+                    />
+                  </Field>
+                  <Field label="IFSC code">
+                    <Input
+                      value={payoutForm.bankIfsc}
+                      onChange={(e) =>
+                        setPayoutForm({ ...payoutForm, bankIfsc: e.target.value.toUpperCase() })
+                      }
+                    />
+                  </Field>
+                </div>
+              )}
+
+              <Button full loading={payoutSaving} onClick={savePayoutAccount}>
+                Save payout details
+              </Button>
+            </div>
+          )}
+        </section>
+      ) : null}
 
       <section className="mt-8">
         <h2 className="text-2xl font-extrabold tracking-tight text-slate-900">Blocked students</h2>
