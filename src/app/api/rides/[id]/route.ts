@@ -111,11 +111,22 @@ export async function GET(
       }));
     }
 
+    let myBooking: { id: number; status: string } | null = null;
+    if (viewer && !isOwner) {
+      const mine = await db
+        .select()
+        .from(bookings)
+        .where(and(eq(bookings.rideId, rideId), eq(bookings.riderId, viewer.id)))
+        .limit(1);
+      if (mine[0]) myBooking = { id: mine[0].id, status: mine[0].status };
+    }
+
     return NextResponse.json({
       ride: serializeRide(row, revealPhone, revealStops),
       similar,
       isOwner,
       requests,
+      myBooking,
     });
   } catch (error) {
     return logError("ride detail failed", error);
