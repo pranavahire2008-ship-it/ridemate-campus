@@ -1,5 +1,6 @@
 import {
   boolean,
+  doublePrecision,
   index,
   integer,
   pgTable,
@@ -291,6 +292,28 @@ export const driverPayoutAccounts = pgTable(
   (table) => [
     index("dpa_driver_idx").on(table.driverId),
     unique("dpa_driver_uq").on(table.driverId),
+  ],
+);
+
+/* -------------------------------------------------------- driver live location */
+
+export const driverLiveLocations = pgTable(
+  "driver_live_locations",
+  {
+    id: serial("id").primaryKey(),
+    driverId: integer("driver_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    rideId: integer("ride_id")
+      .notNull()
+      .references(() => rides.id, { onDelete: "cascade" }),
+    lat: doublePrecision("lat").notNull(),
+    lng: doublePrecision("lng").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("dll_ride_idx").on(table.rideId),
+    unique("dll_driver_uq").on(table.driverId),
   ],
 );
 
