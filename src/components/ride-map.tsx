@@ -12,6 +12,7 @@ type RideMapProps = {
   stops?: string[];
   height?: string;
   className?: string;
+  liveDriver?: LatLng | null;
 };
 
 // Resolve a place name to coordinates from our static list
@@ -76,9 +77,11 @@ export function RideMap({
   stops = [],
   height = "280px",
   className = "",
+  liveDriver = null,
 }: RideMapProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
+  const driverMarkerRef = useRef<L.Marker | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [L, setL] = useState<typeof import("leaflet") | null>(null);
 
@@ -192,8 +195,38 @@ export function RideMap({
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
       }
+      driverMarkerRef.current = null;
     };
   }, [loaded, L, startCoords, endCoords, from, to, stops]);
+
+  // Live driver marker — updates in place without re-rendering the whole map.
+  useEffect(() => {
+    if (!L || !mapInstanceRef.current) return;
+    const map = mapInstanceRef.current;
+
+    if (!liveDriver) {
+      if (driverMarkerRef.current) {
+        driverMarkerRef.current.remove();
+        driverMarkerRef.current = null;
+      }
+      return;
+    }
+
+    const carIcon = L.divIcon({
+      className: "",
+      html: '<div style="width:32px;height:32px;border-radius:50%;background:#f59e0b;border:3px solid white;box-shadow:0 2px 10px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;font-size:16px">🚗</div>',
+      iconSize: [32, 32],
+      iconAnchor: [16, 16],
+    });
+
+    if (driverMarkerRef.current) {
+      driverMarkerRef.current.setLatLng([liveDriver.lat, liveDriver.lng]);
+    } else {
+      driverMarkerRef.current = L.marker([liveDriver.lat, liveDriver.lng], { icon: carIcon })
+        .addTo(map)
+        .bindPopup("Driver's current location");
+    }
+  }, [L, liveDriver]);
 
   if (!startCoords || !endCoords) {
     return (
