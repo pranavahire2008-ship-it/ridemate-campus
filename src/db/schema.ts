@@ -266,6 +266,34 @@ export const driverEarnings = pgTable(
   ],
 );
 
+/* ------------------------------------------------------ driver payout accounts */
+
+export const driverPayoutAccounts = pgTable(
+  "driver_payout_accounts",
+  {
+    id: serial("id").primaryKey(),
+    driverId: integer("driver_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // UPI | BANK_ACCOUNT
+    method: varchar("method", { length: 20 }).notNull().default("UPI"),
+    upiId: varchar("upi_id", { length: 120 }),
+    accountHolderName: varchar("account_holder_name", { length: 120 }),
+    bankAccountNumber: varchar("bank_account_number", { length: 40 }),
+    bankIfsc: varchar("bank_ifsc", { length: 20 }),
+    // RazorpayX contact + fund account references, filled in once created via API
+    razorpayxContactId: varchar("razorpayx_contact_id", { length: 80 }),
+    razorpayxFundAccountId: varchar("razorpayx_fund_account_id", { length: 80 }),
+    verified: boolean("verified").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("dpa_driver_idx").on(table.driverId),
+    unique("dpa_driver_uq").on(table.driverId),
+  ],
+);
+
 /* --------------------------------------------------------------- payments */
 
 export const payments = pgTable(
