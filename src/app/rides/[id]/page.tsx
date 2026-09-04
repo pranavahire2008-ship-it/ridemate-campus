@@ -1,8 +1,11 @@
-"use client";
 
+
+Rides id page · TSX
+"use client";
+ 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Avatar, Badge, Button, EmptyState, Modal, Select, Spinner, Textarea, useToast } from "@/components/ui";
 import { RideCard } from "@/components/ride-card";
 import { BookingModal } from "@/components/booking-modal";
@@ -11,11 +14,12 @@ import { RideMap } from "@/components/ride-map";
 import { formatDatePretty, formatTime12h, VEHICLE_TYPES } from "@/lib/locations";
 import { useSession } from "@/components/session-provider";
 import type { MatchedRide, Ride } from "@/lib/types";
-
+ 
 type Detail = {
   ride: Ride;
   similar: MatchedRide[];
   isOwner: boolean;
+  myBooking: { id: number; status: string } | null;
   requests: {
     id: number;
     seats: number;
@@ -25,7 +29,7 @@ type Detail = {
     totalPrice: number;
   }[];
 };
-
+ 
 export default function RideDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -39,7 +43,10 @@ export default function RideDetailPage() {
   const [reason, setReason] = useState("unsafe_behaviour");
   const [details, setDetails] = useState("");
   const [sending, setSending] = useState(false);
-
+  const [sharingLocation, setSharingLocation] = useState(false);
+  const [liveDriverPos, setLiveDriverPos] = useState<{ lat: number; lng: number } | null>(null);
+  const watchIdRef = useRef<number | null>(null);
+ 
   const load = useCallback(async () => {
     if (!rideId) return;
     setLoading(true);
@@ -56,11 +63,88 @@ export default function RideDetailPage() {
       setLoading(false);
     }
   }, [rideId]);
-
+ 
   useEffect(() => {
     void load();
   }, [load]);
-
+ 
+  // Driver: start/stop broadcasting GPS position while sharing is on.
+  const toggleSharing = useCallback(() => {
+    if (!data) return;
+ 
+    if (sharingLocation) {
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
+      setSharingLocation(false);
+      void fetch("/api/driver/location", { method: "DELETE" });
+      return;
+    }
+ 
+    if (!("geolocation" in navigator)) {
+      push({ title: "Location not supported", body: "Your browser can't share GPS location.", tone: "error" });
+      return;
+    }
+ 
+    const rideIdNum = data.ride.id;
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        void fetch("/api/driver/location", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            rideId: rideIdNum,
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+          }),
+        });
+      },
+      () => {
+        push({ title: "Could not get location", body: "Check location permission for this site.", tone: "error" });
+        setSharingLocation(false);
+      },
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 },
+    );
+    setSharingLocation(true);
+  }, [data, sharingLocation, push]);
+ 
+  useEffect(() => {
+    return () => {
+      if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
+    };
+  }, []);
+ 
+  // Rider (or driver's own view): poll for current driver position while ride is active.
+  const canSeeLiveLocation =
+    !!data &&
+    data.ride.status === "active" &&
+    (data.isOwner || data.myBooking?.status === "ACCEPTED" || data.myBooking?.status === "COMPLETED");
+ 
+  useEffect(() => {
+    if (!canSeeLiveLocation || !data) {
+      setLiveDriverPos(null);
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/rides/${data.ride.id}/location`, { cache: "no-store" });
+        if (!res.ok) return;
+        const body = (await res.json()) as { location: { lat: number; lng: number } | null };
+        if (!cancelled) setLiveDriverPos(body.location ? { lat: body.location.lat, lng: body.location.lng } : null);
+      } catch {
+        /* ignore transient errors */
+      }
+    };
+    void poll();
+    const interval = setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [canSeeLiveLocation, data]);
+ 
   const rideAction = async (action: string) => {
     if (!data) return;
     const res = await fetch(`/api/rides/${data.ride.id}`, {
@@ -69,6 +153,14 @@ export default function RideDetailPage() {
       body: JSON.stringify({ action }),
     });
     if (res.ok) {
+      if (action === "complete" || action === "cancel") {
+        if (watchIdRef.current !== null) {
+          navigator.geolocation.clearWatch(watchIdRef.current);
+          watchIdRef.current = null;
+        }
+        setSharingLocation(false);
+        void fetch("/api/driver/location", { method: "DELETE" });
+      }
       push({ title: action === "cancel" ? "Ride cancelled" : "Ride completed", tone: "success" });
       await load();
       await refresh();
@@ -77,7 +169,7 @@ export default function RideDetailPage() {
       push({ title: "Action failed", body: payload.error, tone: "error" });
     }
   };
-
+ 
   const blockDriver = async () => {
     if (!data) return;
     const res = await fetch("/api/blocks", {
@@ -101,7 +193,7 @@ export default function RideDetailPage() {
       push({ title: "Could not block", body: body.error, tone: "error" });
     }
   };
-
+ 
   const report = async () => {
     if (!data) return;
     setSending(true);
@@ -131,9 +223,9 @@ export default function RideDetailPage() {
       setSending(false);
     }
   };
-
+ 
   if (loading) return <Spinner label="Loading ride…" />;
-
+ 
   if (!data) {
     return (
       <div className="mx-auto max-w-xl px-4 py-16 sm:px-6">
@@ -150,10 +242,10 @@ export default function RideDetailPage() {
       </div>
     );
   }
-
+ 
   const { ride, similar, isOwner } = data;
   const vehicle = VEHICLE_TYPES.find((v) => v.value === ride.vehicleType);
-
+ 
   return (
     <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:py-12">
       <Link
@@ -162,7 +254,7 @@ export default function RideDetailPage() {
       >
         ← Back to rides
       </Link>
-
+ 
       <div className="mt-5 grid gap-6 lg:grid-cols-[1.35fr_0.65fr] lg:items-start">
         <div className="space-y-5">
           <div className="rounded-3xl border border-slate-100 bg-white p-5 shadow-card sm:p-6">
@@ -184,7 +276,7 @@ export default function RideDetailPage() {
               {formatDatePretty(ride.travelDate)} · departs {formatTime12h(ride.departureTime)} ·{" "}
               {ride.vehicleModel || vehicle?.label}
             </p>
-
+ 
             <dl className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
               {[
                 { k: "Price / seat", v: `₹${ride.pricePerSeat}` },
@@ -198,13 +290,13 @@ export default function RideDetailPage() {
                 </div>
               ))}
             </dl>
-
+ 
             {ride.notes ? (
               <p className="mt-4 rounded-2xl bg-brand-50/70 px-4 py-3 text-sm leading-relaxed text-slate-700">
                 “{ride.notes}”
               </p>
             ) : null}
-
+ 
             <div className="mt-5 flex flex-wrap gap-2">
               {isOwner ? (
                 <>
@@ -244,7 +336,7 @@ export default function RideDetailPage() {
               </Button>
             </div>
           </div>
-
+ 
           <RouteVisual
             from={ride.fromLocation}
             to={ride.toLocation}
@@ -253,17 +345,36 @@ export default function RideDetailPage() {
             matchScore={similar[0]?.match.score}
             matchName={similar[0]?.driver.fullName}
           />
-
+ 
           {/* Interactive Map */}
           <div className="mt-4">
+            {data.isOwner && ride.status === "active" ? (
+              <div className="mb-2 flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3">
+                <div>
+                  <p className="text-sm font-bold text-slate-900">Live location sharing</p>
+                  <p className="text-xs text-slate-500">
+                    {sharingLocation ? "Riders can see your live position." : "Turn on so riders can track you."}
+                  </p>
+                </div>
+                <Button size="sm" variant={sharingLocation ? "danger" : "secondary"} onClick={toggleSharing}>
+                  {sharingLocation ? "Stop sharing" : "Start sharing"}
+                </Button>
+              </div>
+            ) : null}
+            {!data.isOwner && canSeeLiveLocation ? (
+              <p className="mb-2 text-xs font-semibold text-slate-500">
+                {liveDriverPos ? "🟢 Driver's live location is updating" : "Waiting for driver to start sharing location…"}
+              </p>
+            ) : null}
             <RideMap
               from={ride.fromLocation}
               to={ride.toLocation}
               stops={ride.routeStops}
               height="300px"
+              liveDriver={canSeeLiveLocation ? liveDriverPos : null}
             />
           </div>
-
+ 
           {isOwner && data.requests.length > 0 ? (
             <div className="rounded-3xl border border-slate-100 bg-white p-5 shadow-card">
               <h2 className="text-lg font-bold tracking-tight text-slate-900">
@@ -294,7 +405,7 @@ export default function RideDetailPage() {
               </div>
             </div>
           ) : null}
-
+ 
           {similar.length > 0 ? (
             <div>
               <h2 className="text-xl font-extrabold tracking-tight text-slate-900">
@@ -319,7 +430,7 @@ export default function RideDetailPage() {
             </div>
           ) : null}
         </div>
-
+ 
         <aside className="space-y-4 lg:sticky lg:top-24">
           <div className="rounded-3xl border border-slate-100 bg-white p-5 shadow-card">
             <div className="flex items-start gap-3.5">
@@ -356,7 +467,7 @@ export default function RideDetailPage() {
               </p>
             </div>
           </div>
-
+ 
           <div className="rounded-3xl border border-slate-100 bg-slate-50 p-5">
             <h3 className="text-sm font-bold text-slate-900">Before you book</h3>
             <ul className="mt-3 space-y-2.5 text-[13px] leading-relaxed text-slate-600">
@@ -375,9 +486,9 @@ export default function RideDetailPage() {
           </div>
         </aside>
       </div>
-
+ 
       <BookingModal ride={ride} open={bookingOpen} onClose={() => setBookingOpen(false)} />
-
+ 
       <Modal open={reportOpen} onClose={() => setReportOpen(false)} title="Report this student">
         <p className="text-sm text-slate-600">
           Reporting is anonymous. Our safety team reviews every report within 24 hours.
@@ -413,3 +524,5 @@ export default function RideDetailPage() {
     </div>
   );
 }
+ 
+Explain
