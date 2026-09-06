@@ -1,17 +1,15 @@
 import { NextResponse } from "next/server";
 import { desc, eq } from "drizzle-orm";
-import { writeFile, mkdir } from "fs/promises";
 import { randomBytes } from "crypto";
-import { join } from "path";
 import { db } from "@/db";
 import { driverVerifications, users } from "@/db/schema";
 import { fail, logError, requireUser, sameOriginGuard } from "@/lib/api";
 import { rateLimited, RATE_LIMITS } from "@/lib/rate-limit";
 import { notify } from "@/lib/notify";
+import { uploadVerificationDocument } from "@/lib/supabase-storage";
 
 export const dynamic = "force-dynamic";
 
-const UPLOAD_DIR = join(process.cwd(), "private-uploads", "driver-docs");
 const MAX_SIZE = 5 * 1024 * 1024;
 const ALLOWED_EXTS = new Set(["jpg", "jpeg", "png", "pdf"]);
 
@@ -104,8 +102,7 @@ export async function POST(request: Request) {
       if (!ALLOWED_EXTS.has(ext)) throw new Error("Only JPG, PNG or PDF files are allowed.");
       if (file.size > MAX_SIZE) throw new Error("File must be under 5 MB.");
       const name = `${prefix}_${user.id}_${Date.now()}_${randomBytes(8).toString("hex")}.${ext}`;
-      await mkdir(UPLOAD_DIR, { recursive: true });
-      await writeFile(join(UPLOAD_DIR, name), Buffer.from(await file.arrayBuffer()));
+      await uploadVerificationDocument(name, Buffer.from(await file.arrayBuffer()), file.type || "application/octet-stream");
       return name;
     }
 
