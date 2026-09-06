@@ -89,7 +89,7 @@ type DriverVerificationRow = {
   vehicleNumber: string;
   vehicleType: string;
   licenceDocumentPath: string;
-  vehicleRegDocumentPath: string;
+  vehicleRegDocumentPath: string | null;
   identityDocumentPath: string | null;
   status: string;
   rejectionReason: string | null;
@@ -349,14 +349,18 @@ export default function AdminPage() {
                     >
                       View licence
                     </a>
-                    <a
-                      href={`/api/verification/document/${row.vehicleRegDocumentPath}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="rounded-xl bg-slate-100 px-3 py-1.5 text-slate-700 hover:bg-slate-200"
-                    >
-                      View RC
-                    </a>
+                    {row.vehicleRegDocumentPath ? (
+                      <a
+                        href={`/api/verification/document/${row.vehicleRegDocumentPath}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded-xl bg-slate-100 px-3 py-1.5 text-slate-700 hover:bg-slate-200"
+                      >
+                        View RC
+                      </a>
+                    ) : (
+                      <span className="text-[11px] text-slate-400">No RC uploaded</span>
+                    )}
                     {row.identityDocumentPath ? (
                       <a
                         href={`/api/verification/document/${row.identityDocumentPath}`}
