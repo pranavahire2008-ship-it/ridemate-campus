@@ -1,20 +1,16 @@
 import { NextResponse } from "next/server";
-import { readFile, stat } from "fs/promises";
-import { join } from "path";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { studentVerifications, driverVerifications } from "@/db/schema";
 import { getCurrentUser, isAdmin } from "@/lib/auth";
 import { fail, logError } from "@/lib/api";
+import { downloadVerificationDocument } from "@/lib/supabase-storage";
 
 export const dynamic = "force-dynamic";
 
-const STUDENT_DIR = join(process.cwd(), "private-uploads", "student-docs");
-const DRIVER_DIR = join(process.cwd(), "private-uploads", "driver-docs");
-
 /**
  * Secure document server: only the document owner or an admin can access.
- * Documents are NEVER served from a public URL.
+ * Documents are stored in a private Supabase Storage bucket, never a public URL.
  */
 export async function GET(
   _request: Request,
@@ -31,8 +27,7 @@ export async function GET(
       return fail("Invalid document reference.", 400);
     }
 
-    // Determine which directory this file belongs to
-    let filePath: string | null = null;
+    let found = false;
     let authorized = false;
 
     // Check student verification docs
@@ -43,63 +38,58 @@ export async function GET(
       .limit(1);
 
     if (svRows[0]) {
-      filePath = join(STUDENT_DIR, safeName);
+      found = true;
       authorized = svRows[0].userId === user.id || isAdmin(user);
     }
 
-    // Check driver verification docs
-    if (!filePath) {
+    // Check driver verification docs (licence, RC, identity)
+    if (!found) {
       const dvRows = await db
         .select()
         .from(driverVerifications)
         .where(eq(driverVerifications.licenceDocumentPath, safeName))
         .limit(1);
       if (dvRows[0]) {
-        filePath = join(DRIVER_DIR, safeName);
+        found = true;
         authorized = dvRows[0].userId === user.id || isAdmin(user);
       }
     }
-    if (!filePath) {
+    if (!found) {
       const dvRows2 = await db
         .select()
         .from(driverVerifications)
         .where(eq(driverVerifications.vehicleRegDocumentPath, safeName))
         .limit(1);
       if (dvRows2[0]) {
-        filePath = join(DRIVER_DIR, safeName);
+        found = true;
         authorized = dvRows2[0].userId === user.id || isAdmin(user);
       }
     }
-    if (!filePath) {
+    if (!found) {
       const dvRows3 = await db
         .select()
         .from(driverVerifications)
         .where(eq(driverVerifications.identityDocumentPath, safeName))
         .limit(1);
       if (dvRows3[0]) {
-        filePath = join(DRIVER_DIR, safeName);
+        found = true;
         authorized = dvRows3[0].userId === user.id || isAdmin(user);
       }
     }
 
-    if (!filePath) return fail("Document not found.", 404);
+    if (!found) return fail("Document not found.", 404);
     if (!authorized) return fail("You do not have permission to view this document.", 403);
 
-    // Verify file exists on disk
+    let buffer: Buffer;
     try {
-      await stat(filePath);
+      buffer = await downloadVerificationDocument(safeName);
     } catch {
-      return fail("Document file not found on server.", 404);
+      return fail("Document file not found in storage.", 404);
     }
 
-    const buffer = await readFile(filePath);
     const ext = safeName.split(".").pop()?.toLowerCase() ?? "";
     const contentType =
-      ext === "pdf"
-        ? "application/pdf"
-        : ext === "png"
-          ? "image/png"
-          : "image/jpeg";
+      ext === "pdf" ? "application/pdf" : ext === "png" ? "image/png" : "image/jpeg";
 
     return new NextResponse(buffer, {
       status: 200,
