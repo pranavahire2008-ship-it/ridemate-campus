@@ -1,17 +1,15 @@
 import { NextResponse } from "next/server";
 import { desc, eq } from "drizzle-orm";
-import { writeFile, mkdir } from "fs/promises";
 import { randomBytes } from "crypto";
-import { join } from "path";
 import { db } from "@/db";
 import { studentVerifications, users } from "@/db/schema";
 import { fail, logError, requireUser, sameOriginGuard } from "@/lib/api";
 import { rateLimited, RATE_LIMITS } from "@/lib/rate-limit";
 import { notify } from "@/lib/notify";
+import { uploadVerificationDocument } from "@/lib/supabase-storage";
 
 export const dynamic = "force-dynamic";
 
-const UPLOAD_DIR = join(process.cwd(), "private-uploads", "student-docs");
 const MAX_SIZE = 5 * 1024 * 1024; // 5 MB
 const ALLOWED_TYPES = new Set([
   "image/jpeg",
@@ -112,11 +110,13 @@ export async function POST(request: Request) {
     // Save file securely with a random name (no user-controlled path)
     const safeExt = ALLOWED_EXTS.has(ext) ? ext : "bin";
     const fileName = `sv_${auth.user.id}_${Date.now()}_${randomBytes(8).toString("hex")}.${safeExt}`;
-    const filePath = join(UPLOAD_DIR, fileName);
 
-    await mkdir(UPLOAD_DIR, { recursive: true });
     const buffer = Buffer.from(await file.arrayBuffer());
-    await writeFile(filePath, buffer);
+    try {
+      await uploadVerificationDocument(fileName, buffer, file.type || "application/octet-stream");
+    } catch (err) {
+      return logError("student verification upload", err);
+    }
 
     const docType = safeExt === "pdf" ? "pdf" : "image";
 
