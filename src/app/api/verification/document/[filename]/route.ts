@@ -91,7 +91,7 @@ export async function GET(
     const contentType =
       ext === "pdf" ? "application/pdf" : ext === "png" ? "image/png" : "image/jpeg";
 
-    return new NextResponse(buffer, {
+    return new NextResponse(new Uint8Array(buffer), {
       status: 200,
       headers: {
         "Content-Type": contentType,
