@@ -56,6 +56,7 @@ export default function VerificationPage() {
   const [dVehicleType, setDVehicleType] = useState("scooter");
   const [dLicenceFile, setDLicenceFile] = useState<File | null>(null);
   const [dRegFile, setDRegFile] = useState<File | null>(null);
+  const [dIdentityFile, setDIdentityFile] = useState<File | null>(null);
   const [dSubmitting, setDSubmitting] = useState(false);
 
   const load = useCallback(async () => {
@@ -107,14 +108,15 @@ export default function VerificationPage() {
   };
 
   const submitDriver = async () => {
-    if (!dLicenceFile || !dRegFile) { push({ title: "Upload both documents", tone: "error" }); return; }
+    if (!dLicenceFile || !dIdentityFile) { push({ title: "Upload driving licence and identity proof", tone: "error" }); return; }
     setDSubmitting(true);
     try {
       const fd = new FormData();
       fd.append("vehicleNumber", dVehicleNo);
       fd.append("vehicleType", dVehicleType);
       fd.append("licenceDocument", dLicenceFile);
-      fd.append("vehicleRegDocument", dRegFile);
+      if (dRegFile) fd.append("vehicleRegDocument", dRegFile);
+      fd.append("identityDocument", dIdentityFile);
       const res = await fetch("/api/verification/driver", { method: "POST", body: fd });
       const data = await res.json();
       if (res.ok) {
@@ -324,8 +326,11 @@ export default function VerificationPage() {
                   <Field label="Driving Licence (JPG, PNG or PDF)">
                     <input type="file" accept=".jpg,.jpeg,.png,.pdf" onChange={(e) => setDLicenceFile(e.target.files?.[0] ?? null)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 file:mr-3 file:rounded-lg file:border-0 file:bg-brand-50 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-brand-700" />
                   </Field>
-                  <Field label="Vehicle Registration Document (JPG, PNG or PDF)">
+                  <Field label="Vehicle Registration Document (optional, JPG/PNG/PDF)">
                     <input type="file" accept=".jpg,.jpeg,.png,.pdf" onChange={(e) => setDRegFile(e.target.files?.[0] ?? null)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 file:mr-3 file:rounded-lg file:border-0 file:bg-brand-50 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-brand-700" />
+                  </Field>
+                  <Field label="Aadhaar or other Identity Proof (JPG, PNG or PDF)">
+                    <input type="file" accept=".jpg,.jpeg,.png,.pdf" onChange={(e) => setDIdentityFile(e.target.files?.[0] ?? null)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 file:mr-3 file:rounded-lg file:border-0 file:bg-brand-50 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-brand-700" />
                   </Field>
                 </div>
                 <Button full size="lg" className="mt-5" loading={dSubmitting} onClick={submitDriver}>
