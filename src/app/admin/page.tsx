@@ -64,6 +64,7 @@ type Overview = {
     studentId: string;
     verificationStatus: string;
     createdAt: string;
+    documentPath: string | null;
   }[];
   payments: {
     id: number;
@@ -262,6 +263,18 @@ export default function AdminPage() {
                   <Badge tone={row.verificationStatus === "PENDING" ? "amber" : "rose"}>
                     {row.verificationStatus}
                   </Badge>
+                  {row.documentPath ? (
+                    <a
+                      href={`/api/verification/document/${row.documentPath}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded-xl bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-200"
+                    >
+                      View ID card
+                    </a>
+                  ) : (
+                    <span className="text-[11px] text-slate-400">No document on file</span>
+                  )}
                   <Button
                     size="sm"
                     variant="success"
@@ -474,7 +487,7 @@ export default function AdminPage() {
               Driver Earnings &amp; Payout Ledger
             </h2>
             <p className="mt-1 text-xs text-slate-500">
-              5% platform commission collected, driver pending earnings, available balances, and payout management.
+              20% platform commission collected, driver pending earnings, available balances, and payout management.
             </p>
           </div>
           {data.driverEarningsOverview ? (
@@ -516,7 +529,7 @@ export default function AdminPage() {
 
         {!data.driverEarningsOverview || data.driverEarningsOverview.earningsList.length === 0 ? (
           <p className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-white p-6 text-center text-sm text-slate-500">
-            No driver earnings recorded yet. When rides are booked and paid, 95% driver earnings and 5% platform commission will be logged here.
+            No driver earnings recorded yet. When rides are booked and paid, 80% driver earnings and 20% platform commission will be logged here.
           </p>
         ) : (
           <div className="mt-4 space-y-3">
@@ -539,9 +552,9 @@ export default function AdminPage() {
                   </div>
                   <div className="text-right">
                     <p className="text-lg font-extrabold text-slate-900">
-                      ₹{item.driverEarning} <span className="text-xs font-normal text-slate-400">(95%)</span>
+                      ₹{item.driverEarning} <span className="text-xs font-normal text-slate-400">(80%)</span>
                     </p>
-                    <p className="text-[11px] text-slate-400">Total fare: ₹{item.totalFare} | Comm (5%): ₹{item.commissionAmount}</p>
+                    <p className="text-[11px] text-slate-400">Total fare: ₹{item.totalFare} | Comm (20%): ₹{item.commissionAmount}</p>
                   </div>
                 </div>
 
