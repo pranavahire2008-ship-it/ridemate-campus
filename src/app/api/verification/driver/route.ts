@@ -89,6 +89,9 @@ export async function POST(request: Request) {
 
     if (!vehicleNumber || vehicleNumber.length < 4) return fail("Enter your vehicle number.", 422);
     if (!vehicleType) return fail("Select your vehicle type.", 422);
+    if (!licenceFile || !(licenceFile instanceof File)) {
+      return fail("Upload your driving licence.", 422);
+    }
     if (!identityFile || !(identityFile instanceof File)) {
       return fail("Upload your Aadhaar or other identity proof.", 422);
     }
@@ -107,11 +110,11 @@ export async function POST(request: Request) {
     }
 
     let licencePath: string;
-    let regPath: string;
+    let regPath: string | null;
     let identityPath: string;
     try {
       licencePath = await saveFile(licenceFile, "dl");
-      regPath = await saveFile(regFile, "rc");
+      regPath = regFile instanceof File ? await saveFile(regFile, "rc") : null;
       identityPath = await saveFile(identityFile, "id");
     } catch (err) {
       return fail(err instanceof Error ? err.message : "File upload failed.", 422);
