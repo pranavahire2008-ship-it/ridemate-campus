@@ -213,8 +213,8 @@ export default function ProfilePage() {
       push({ title: "Enter your vehicle number", tone: "error" });
       return;
     }
-    if (!licenceFile || !regFile || !identityFile) {
-      push({ title: "Upload licence, RC and Aadhaar/ID documents", tone: "error" });
+    if (!licenceFile || !identityFile) {
+      push({ title: "Upload licence and Aadhaar/ID documents", tone: "error" });
       return;
     }
     setDriverSubmitting(true);
@@ -223,7 +223,7 @@ export default function ProfilePage() {
       fd.append("vehicleNumber", driverForm.vehicleNumber.trim());
       fd.append("vehicleType", driverForm.vehicleType);
       fd.append("licenceDocument", licenceFile);
-      fd.append("vehicleRegDocument", regFile);
+      if (regFile) fd.append("vehicleRegDocument", regFile);
       fd.append("identityDocument", identityFile);
 
       const res = await fetch("/api/verification/driver", { method: "POST", body: fd });
@@ -463,7 +463,7 @@ export default function ProfilePage() {
               />
             </Field>
 
-            <Field label="Vehicle RC / registration document (JPG, PNG or PDF, max 5MB)">
+            <Field label="Vehicle RC / registration document (optional, JPG/PNG/PDF, max 5MB)">
               <input
                 type="file"
                 accept=".jpg,.jpeg,.png,.pdf"
