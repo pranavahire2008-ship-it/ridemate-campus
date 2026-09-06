@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { desc, eq, sql } from "drizzle-orm";
+import { desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { bookings, payments, reports, rides, users } from "@/db/schema";
+import { bookings, payments, reports, rides, studentVerifications, users } from "@/db/schema";
 import { logError, requireAdmin } from "@/lib/api";
 import { releaseExpiredPayments } from "@/lib/payments";
 import { paymentMode } from "@/lib/razorpay";
@@ -38,6 +38,19 @@ export async function GET() {
       .where(sql`${users.verificationStatus} in ('PENDING', 'REJECTED', 'UNVERIFIED')`)
       .orderBy(desc(users.createdAt))
       .limit(50);
+
+    const pendingUserIds = pendingVerification.map((row) => row.id);
+    const latestDocByUser = new Map<number, string>();
+    if (pendingUserIds.length > 0) {
+      const docRows = await db
+        .select({ userId: studentVerifications.userId, documentPath: studentVerifications.documentPath, createdAt: studentVerifications.createdAt })
+        .from(studentVerifications)
+        .where(inArray(studentVerifications.userId, pendingUserIds))
+        .orderBy(desc(studentVerifications.createdAt));
+      for (const doc of docRows) {
+        if (!latestDocByUser.has(doc.userId)) latestDocByUser.set(doc.userId, doc.documentPath);
+      }
+    }
 
     const paymentRows = await db
       .select({ payment: payments, booking: bookings, ride: rides })
@@ -79,6 +92,7 @@ export async function GET() {
       pendingVerification: pendingVerification.map((row) => ({
         ...row,
         createdAt: row.createdAt.toISOString(),
+        documentPath: latestDocByUser.get(row.id) ?? null,
       })),
       payments: paymentRows.map((row) => ({
         id: row.payment.id,
