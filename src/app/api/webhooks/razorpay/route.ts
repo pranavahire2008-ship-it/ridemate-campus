@@ -12,6 +12,7 @@ export const dynamic = "force-dynamic";
 
 type RazorpayWebhookPayload = {
   event?: string;
+
   payload?: {
     payment?: {
       entity?: {
@@ -22,6 +23,7 @@ type RazorpayWebhookPayload = {
         error_description?: string;
       };
     };
+
     refund?: {
       entity?: {
         id?: string;
@@ -30,6 +32,7 @@ type RazorpayWebhookPayload = {
         status?: string;
       };
     };
+
     transfer?: {
       entity?: {
         id?: string;
@@ -37,9 +40,12 @@ type RazorpayWebhookPayload = {
         payment_id?: string;
         amount?: number;
         status?: string;
-        error?: { description?: string };
+        error?: {
+          description?: string;
+        };
       };
     };
+
     payout?: {
       entity?: {
         id?: string;
@@ -53,172 +59,521 @@ type RazorpayWebhookPayload = {
 
 /**
  * Razorpay webhook receiver.
- * - Reads the raw body (required for signature verification).
- * - Rejects any request whose X-Razorpay-Signature does not verify.
- * - Stores each event id so retries never process the same event twice.
+ *
+ * IMPORTANT:
+ * - Uses the raw request body for signature verification.
+ * - Rejects invalid Razorpay signatures.
+ * - Stores webhook event IDs to prevent duplicate processing.
+ * - Handles successful payments.
+ * - Handles failed payments.
+ * - Handles refunds.
+ * - Handles transfers/payouts.
  */
 export async function POST(request: Request) {
-  const limit = rateLimited(request, "webhook", RATE_LIMITS.webhook);
-  if (limit) return limit;
-
-  const rawBody = await request.text();
-  const signature = request.headers.get("x-razorpay-signature");
-
-  if (!verifyWebhookSignature(rawBody, signature)) {
-    return fail("Invalid webhook signature.", 401, "WEBHOOK_SIGNATURE_INVALID");
-  }
-
-  let payload: RazorpayWebhookPayload;
   try {
-    payload = JSON.parse(rawBody) as RazorpayWebhookPayload;
-  } catch {
-    return fail("Invalid webhook payload.", 400);
-  }
+    /*
+     * Rate-limit webhook requests.
+     */
+    const limit = rateLimited(
+      request,
+      "webhook",
+      RATE_LIMITS.webhook,
+    );
 
-  const event = payload.event ?? "unknown";
-  const paymentEntity = payload.payload?.payment?.entity;
-  const refundEntity = payload.payload?.refund?.entity;
-  const transferEntity = payload.payload?.transfer?.entity;
-  const payoutEntity = payload.payload?.payout?.entity;
+    if (limit) {
+      return limit;
+    }
 
-  // Razorpay events carry a unique id in `payload.entity.id` plus the header
-  // `X-Razorpay-Event-Id`; we build a stable key from the event + entity ids.
-  const eventId =
-    request.headers.get("x-razorpay-event-id") ??
-    `${event}:${refundEntity?.id ?? transferEntity?.id ?? payoutEntity?.id ?? paymentEntity?.id ?? rawBody.length}:${paymentEntity?.order_id ?? ""}`;
+    /*
+     * Razorpay signature verification MUST use the
+     * exact raw request body.
+     */
+    const rawBody = await request.text();
 
-  try {
+    const signature = request.headers.get(
+      "x-razorpay-signature",
+    );
+
+    /*
+     * Reject anything that does not have a valid
+     * Razorpay webhook signature.
+     */
+    if (
+      !verifyWebhookSignature(
+        rawBody,
+        signature,
+      )
+    ) {
+      return fail(
+        "Invalid webhook signature.",
+        401,
+        "WEBHOOK_SIGNATURE_INVALID",
+      );
+    }
+
+    /*
+     * Parse the verified webhook body.
+     */
+    let payload: RazorpayWebhookPayload;
+
+    try {
+      payload = JSON.parse(
+        rawBody,
+      ) as RazorpayWebhookPayload;
+    } catch {
+      return fail(
+        "Invalid webhook payload.",
+        400,
+        "WEBHOOK_PAYLOAD_INVALID",
+      );
+    }
+
+    const event =
+      payload.event ?? "unknown";
+
+    const paymentEntity =
+      payload.payload?.payment?.entity;
+
+    const refundEntity =
+      payload.payload?.refund?.entity;
+
+    const transferEntity =
+      payload.payload?.transfer?.entity;
+
+    const payoutEntity =
+      payload.payload?.payout?.entity;
+
+    /*
+     * Razorpay sends a unique event ID in the header.
+     *
+     * We use it for idempotency so that if Razorpay
+     * retries the same webhook, RideMate doesn't
+     * process the payment twice.
+     */
+    const eventId =
+      request.headers.get(
+        "x-razorpay-event-id",
+      ) ??
+      [
+        event,
+        paymentEntity?.id ??
+          refundEntity?.id ??
+          transferEntity?.id ??
+          payoutEntity?.id ??
+          "unknown",
+        paymentEntity?.order_id ?? "",
+      ].join(":");
+
+    /*
+     * Store the webhook event.
+     *
+     * If the event already exists, acknowledge it
+     * without processing it again.
+     */
     const inserted = await db
       .insert(webhookEvents)
       .values({
         eventId,
         eventType: event,
-        orderId: paymentEntity?.order_id ?? null,
-        paymentId: paymentEntity?.id ?? refundEntity?.payment_id ?? transferEntity?.payment_id ?? null,
+        orderId:
+          paymentEntity?.order_id ??
+          null,
+        paymentId:
+          paymentEntity?.id ??
+          refundEntity?.payment_id ??
+          transferEntity?.payment_id ??
+          null,
       })
-      .onConflictDoNothing({ target: webhookEvents.eventId })
-      .returning({ id: webhookEvents.id });
+      .onConflictDoNothing({
+        target: webhookEvents.eventId,
+      })
+      .returning({
+        id: webhookEvents.id,
+      });
 
     if (inserted.length === 0) {
-      // Duplicate delivery — already handled, acknowledge without reprocessing.
-      return NextResponse.json({ ok: true, duplicate: true });
+      return NextResponse.json({
+        ok: true,
+        duplicate: true,
+      });
     }
 
-    if (event === "payment.captured" && paymentEntity?.order_id) {
-      await handlePaymentCaptured(paymentEntity.order_id, paymentEntity.id ?? "");
-    } else if (event === "payment.failed" && paymentEntity?.order_id) {
+    /*
+     * PAYMENT CAPTURED
+     */
+    if (
+      event === "payment.captured" &&
+      paymentEntity?.order_id
+    ) {
+      await handlePaymentCaptured(
+        paymentEntity.order_id,
+        paymentEntity.id ?? "",
+      );
+    }
+
+    /*
+     * PAYMENT FAILED
+     */
+    else if (
+      event === "payment.failed" &&
+      paymentEntity?.order_id
+    ) {
       await handlePaymentFailed(
         paymentEntity.order_id,
         paymentEntity.id ?? "",
-        paymentEntity.error_description ?? "Payment failed",
+        paymentEntity.error_description ??
+          "Payment failed",
       );
-    } else if (event === "refund.processed" && refundEntity?.id) {
-      await handleRefundProcessed(refundEntity.id, refundEntity.payment_id ?? "");
-    } else if ((event === "transfer.processed" || event === "payout.processed") && (transferEntity?.id || payoutEntity?.id)) {
-      await handlePayoutProcessed(transferEntity?.id ?? payoutEntity?.id ?? "");
-    } else if ((event === "transfer.failed" || event === "payout.failed" || event === "payout.reversed") && (transferEntity?.id || payoutEntity?.id)) {
-      const reason = transferEntity?.error?.description ?? payoutEntity?.failure_reason ?? "Transfer failed";
-      await handlePayoutFailed(transferEntity?.id ?? payoutEntity?.id ?? "", reason);
     }
 
-    return NextResponse.json({ ok: true, event });
+    /*
+     * REFUND PROCESSED
+     */
+    else if (
+      event === "refund.processed" &&
+      refundEntity?.id
+    ) {
+      await handleRefundProcessed(
+        refundEntity.id,
+        refundEntity.payment_id ?? "",
+      );
+    }
+
+    /*
+     * TRANSFER / PAYOUT SUCCESS
+     */
+    else if (
+      (
+        event === "transfer.processed" ||
+        event === "payout.processed"
+      ) &&
+      (
+        transferEntity?.id ||
+        payoutEntity?.id
+      )
+    ) {
+      await handlePayoutProcessed(
+        transferEntity?.id ??
+          payoutEntity?.id ??
+          "",
+      );
+    }
+
+    /*
+     * TRANSFER / PAYOUT FAILURE
+     */
+    else if (
+      (
+        event === "transfer.failed" ||
+        event === "payout.failed" ||
+        event === "payout.reversed"
+      ) &&
+      (
+        transferEntity?.id ||
+        payoutEntity?.id
+      )
+    ) {
+      const reason =
+        transferEntity?.error?.description ??
+        payoutEntity?.failure_reason ??
+        "Transfer failed";
+
+      await handlePayoutFailed(
+        transferEntity?.id ??
+          payoutEntity?.id ??
+          "",
+        reason,
+      );
+    }
+
+    return NextResponse.json({
+      ok: true,
+      event,
+    });
   } catch (error) {
-    return logError("webhooks/razorpay", error);
-  }
-}
-
-async function handlePaymentCaptured(orderId: string, paymentId: string): Promise<void> {
-  const rows = await db.select().from(payments).where(eq(payments.orderId, orderId)).limit(1);
-  const payment = rows[0];
-  if (!payment || payment.verified) return; // already verified via checkout
-
-  await db.transaction(async (tx) => {
-    await tx
-      .update(payments)
-      .set({ status: "PAID", verified: true, verifiedAt: new Date(), paymentId, updatedAt: new Date() })
-      .where(and(eq(payments.id, payment.id), eq(payments.verified, false)));
-
-    await tx
-      .update(bookings)
-      .set({
-        paymentStatus: "PAID",
-        paymentVerified: true,
-        paymentVerifiedAt: new Date(),
-        paymentId,
-      })
-      .where(eq(bookings.id, payment.bookingId));
-  });
-
-  const bookingRows = await db.select().from(bookings).where(eq(bookings.id, payment.bookingId)).limit(1);
-  const booking = bookingRows[0];
-  if (booking) {
-    try {
-      await recordDriverEarningOnPayment(booking.id);
-    } catch (e) {
-      console.error("[webhooks] failed to record driver earning", e);
-    }
-    await notify(
-      booking.riderId,
-      "payment_successful",
-      "Payment confirmed",
-      `Your payment of ₹${payment.amount} was confirmed by the payment gateway.`,
-      booking.rideId,
+    return logError(
+      "webhooks/razorpay",
+      error,
     );
   }
 }
 
-async function handlePaymentFailed(orderId: string, paymentId: string, reason: string): Promise<void> {
-  const rows = await db.select().from(payments).where(eq(payments.orderId, orderId)).limit(1);
-  const payment = rows[0];
-  if (!payment || payment.verified) return;
-
-  await db.transaction(async (tx) => {
-    await tx
-      .update(payments)
-      .set({ status: "FAILED", paymentId, failureReason: reason.slice(0, 200), updatedAt: new Date() })
-      .where(and(eq(payments.id, payment.id), eq(payments.verified, false)));
-
-    const bookingRows = await tx
-      .select()
-      .from(bookings)
-      .where(eq(bookings.id, payment.bookingId))
-      .limit(1);
-    const booking = bookingRows[0];
-    if (!booking || booking.paymentStatus === "PAID") return;
-
-    await tx
-      .update(bookings)
-      .set({
-        status: "CANCELLED",
-        paymentStatus: "FAILED",
-        cancelledAt: new Date(),
-        cancelledBy: "system",
-        cancellationReason: reason.slice(0, 240) || "Payment failed",
-      })
-      .where(eq(bookings.id, booking.id));
-  });
-}
-
-async function handleRefundProcessed(refundId: string, paymentId: string): Promise<void> {
+/**
+ * Handles a successful Razorpay payment.
+ */
+async function handlePaymentCaptured(
+  orderId: string,
+  paymentId: string,
+): Promise<void> {
   const rows = await db
     .select()
     .from(payments)
-    .where(eq(payments.paymentId, paymentId))
+    .where(
+      eq(
+        payments.orderId,
+        orderId,
+      ),
+    )
     .limit(1);
+
   const payment = rows[0];
-  if (!payment) return;
 
-  await db.transaction(async (tx) => {
-    await tx
-      .update(payments)
-      .set({ status: "REFUNDED", refundStatus: "REFUNDED", updatedAt: new Date() })
-      .where(and(eq(payments.id, payment.id), eq(payments.status, "REFUND_PENDING")));
+  if (!payment) {
+    return;
+  }
 
-    await tx
-      .update(bookings)
-      .set({ paymentStatus: "REFUNDED", refundId })
-      .where(and(eq(bookings.id, payment.bookingId), eq(bookings.paymentStatus, "REFUND_PENDING")));
-  });
+  /*
+   * If checkout verification already marked this
+   * payment as verified, don't process it again.
+   */
+  if (payment.verified) {
+    return;
+  }
+
+  await db.transaction(
+    async (tx) => {
+      await tx
+        .update(payments)
+        .set({
+          status: "PAID",
+          verified: true,
+          verifiedAt: new Date(),
+          paymentId,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(
+              payments.id,
+              payment.id,
+            ),
+            eq(
+              payments.verified,
+              false,
+            ),
+          ),
+        );
+
+      await tx
+        .update(bookings)
+        .set({
+          paymentStatus: "PAID",
+          paymentVerified: true,
+          paymentVerifiedAt:
+            new Date(),
+          paymentId,
+        })
+        .where(
+          eq(
+            bookings.id,
+            payment.bookingId,
+          ),
+        );
+    },
+  );
+
+  /*
+   * Record the driver's earning only after
+   * the payment has been confirmed.
+   */
+  const bookingRows = await db
+    .select()
+    .from(bookings)
+    .where(
+      eq(
+        bookings.id,
+        payment.bookingId,
+      ),
+    )
+    .limit(1);
+
+  const booking = bookingRows[0];
+
+  if (!booking) {
+    return;
+  }
+
+  try {
+    await recordDriverEarningOnPayment(
+      booking.id,
+    );
+  } catch (error) {
+    console.error(
+      "[Razorpay webhook] Failed to record driver earning",
+      error,
+    );
+  }
+
+  await notify(
+    booking.riderId,
+    "payment_successful",
+    "Payment confirmed",
+    `Your payment of ₹${payment.amount} was confirmed by the payment gateway.`,
+    booking.rideId,
+  );
+}
+
+/**
+ * Handles a failed payment.
+ */
+async function handlePaymentFailed(
+  orderId: string,
+  paymentId: string,
+  reason: string,
+): Promise<void> {
+  const rows = await db
+    .select()
+    .from(payments)
+    .where(
+      eq(
+        payments.orderId,
+        orderId,
+      ),
+    )
+    .limit(1);
+
+  const payment = rows[0];
+
+  if (!payment || payment.verified) {
+    return;
+  }
+
+  const safeReason =
+    reason.slice(0, 240) ||
+    "Payment failed";
+
+  await db.transaction(
+    async (tx) => {
+      await tx
+        .update(payments)
+        .set({
+          status: "FAILED",
+          paymentId,
+          failureReason: safeReason,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(
+              payments.id,
+              payment.id,
+            ),
+            eq(
+              payments.verified,
+              false,
+            ),
+          ),
+        );
+
+      const bookingRows =
+        await tx
+          .select()
+          .from(bookings)
+          .where(
+            eq(
+              bookings.id,
+              payment.bookingId,
+            ),
+          )
+          .limit(1);
+
+      const booking =
+        bookingRows[0];
+
+      if (
+        !booking ||
+        booking.paymentStatus ===
+          "PAID"
+      ) {
+        return;
+      }
+
+      await tx
+        .update(bookings)
+        .set({
+          status: "CANCELLED",
+          paymentStatus: "FAILED",
+          cancelledAt: new Date(),
+          cancelledBy: "system",
+          cancellationReason:
+            safeReason,
+        })
+        .where(
+          eq(
+            bookings.id,
+            booking.id,
+          ),
+        );
+    },
+  );
+}
+
+/**
+ * Handles a processed refund.
+ */
+async function handleRefundProcessed(
+  refundId: string,
+  paymentId: string,
+): Promise<void> {
+  const rows = await db
+    .select()
+    .from(payments)
+    .where(
+      eq(
+        payments.paymentId,
+        paymentId,
+      ),
+    )
+    .limit(1);
+
+  const payment = rows[0];
+
+  if (!payment) {
+    return;
+  }
+
+  await db.transaction(
+    async (tx) => {
+      await tx
+        .update(payments)
+        .set({
+          status: "REFUNDED",
+          refundStatus: "REFUNDED",
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(
+              payments.id,
+              payment.id,
+            ),
+            eq(
+              payments.status,
+              "REFUND_PENDING",
+            ),
+          ),
+        );
+
+      await tx
+        .update(bookings)
+        .set({
+          paymentStatus: "REFUNDED",
+          refundId,
+        })
+        .where(
+          and(
+            eq(
+              bookings.id,
+              payment.bookingId,
+            ),
+            eq(
+              bookings.paymentStatus,
+              "REFUND_PENDING",
+            ),
+          ),
+        );
+    },
+  );
 
   await notify(
     payment.userId,
@@ -229,23 +584,40 @@ async function handleRefundProcessed(refundId: string, paymentId: string): Promi
   );
 }
 
-async function handlePayoutProcessed(payoutId: string): Promise<void> {
-  const { driverEarnings } = await import("@/db/schema");
+/**
+ * Handles a successful driver transfer/payout.
+ */
+async function handlePayoutProcessed(
+  payoutId: string,
+): Promise<void> {
+  const { driverEarnings } =
+    await import("@/db/schema");
+
   const rows = await db
     .select()
     .from(driverEarnings)
     .where(
       and(
-        eq(driverEarnings.payoutId, payoutId),
-        eq(driverEarnings.status, "PAYOUT_PROCESSING"),
+        eq(
+          driverEarnings.payoutId,
+          payoutId,
+        ),
+        eq(
+          driverEarnings.status,
+          "PAYOUT_PROCESSING",
+        ),
       ),
     )
     .limit(1);
 
   const earning = rows[0];
-  if (!earning) return;
+
+  if (!earning) {
+    return;
+  }
 
   const now = new Date();
+
   await db
     .update(driverEarnings)
     .set({
@@ -253,7 +625,12 @@ async function handlePayoutProcessed(payoutId: string): Promise<void> {
       paidOutAt: now,
       updatedAt: now,
     })
-    .where(eq(driverEarnings.id, earning.id));
+    .where(
+      eq(
+        driverEarnings.id,
+        earning.id,
+      ),
+    );
 
   await notify(
     earning.driverId,
@@ -264,38 +641,62 @@ async function handlePayoutProcessed(payoutId: string): Promise<void> {
   );
 }
 
-async function handlePayoutFailed(payoutId: string, reason: string): Promise<void> {
-  const { driverEarnings } = await import("@/db/schema");
+/**
+ * Handles a failed driver transfer/payout.
+ */
+async function handlePayoutFailed(
+  payoutId: string,
+  reason: string,
+): Promise<void> {
+  const { driverEarnings } =
+    await import("@/db/schema");
+
   const rows = await db
     .select()
     .from(driverEarnings)
     .where(
       and(
-        eq(driverEarnings.payoutId, payoutId),
-        eq(driverEarnings.status, "PAYOUT_PROCESSING"),
+        eq(
+          driverEarnings.payoutId,
+          payoutId,
+        ),
+        eq(
+          driverEarnings.status,
+          "PAYOUT_PROCESSING",
+        ),
       ),
     )
     .limit(1);
 
   const earning = rows[0];
-  if (!earning) return;
+
+  if (!earning) {
+    return;
+  }
+
+  const safeReason =
+    reason.slice(0, 240) ||
+    "Transfer failed";
 
   await db
     .update(driverEarnings)
     .set({
       status: "FAILED",
-      failureReason: reason.slice(0, 240),
+      failureReason: safeReason,
       updatedAt: new Date(),
     })
-    .where(eq(driverEarnings.id, earning.id));
+    .where(
+      eq(
+        driverEarnings.id,
+        earning.id,
+      ),
+    );
 
   await notify(
     earning.driverId,
     "payout_failed",
     "Driver Payout Failed",
-    `Your payout of ₹${earning.driverEarning} failed (${reason}). You can retry from your Earnings page.`,
+    `Your payout of ₹${earning.driverEarning} failed (${safeReason}). You can retry from your Earnings page.`,
     earning.rideId,
   );
 }
-
-
