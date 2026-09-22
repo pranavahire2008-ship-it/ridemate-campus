@@ -3,60 +3,71 @@ import { env } from "@/lib/env";
 
 export const RAZORPAY_API = "https://api.razorpay.com/v1";
 
-/**
- * This application uses REAL Razorpay Checkout only.
- * There is no simulator, sandbox fallback or instant-success path.
- * When credentials are missing the payment flow fails closed.
- */
 export type PaymentMode = "razorpay";
 
 export function paymentMode(): PaymentMode {
   return "razorpay";
 }
 
-/** True only when both server-side Razorpay API credentials are present. */
 export function isRazorpayConfigured(): boolean {
-  return env.razorpay.configured;
+  return Boolean(
+    env.razorpay.keyId &&
+      env.razorpay.keySecret,
+  );
 }
 
-/** Test Mode keys are prefixed `rzp_test_`; live keys use `rzp_live_`. */
 export function isRazorpayTestMode(): boolean {
   return (env.razorpay.keyId ?? "").startsWith("rzp_test_");
 }
 
-function authHeader(): string {
-  const token = Buffer.from(
-    `${env.razorpay.keyId}:${env.razorpay.keySecret}`,
-  ).toString("base64");
+function getAuthHeader(): string {
+  const credentials = `${env.razorpay.keyId}:${env.razorpay.keySecret}`;
 
-  return `Basic ${token}`;
+  return `Basic ${Buffer.from(credentials).toString("base64")}`;
 }
 
 export type RazorpayOrder = {
   id: string;
+  entity?: string;
   amount: number;
+  amount_paid?: number;
+  amount_due?: number;
   currency: string;
-  status: string;
   receipt?: string;
+  status: string;
+  attempts?: number;
+  notes?: Record<string, string>;
+  created_at?: number;
 };
 
 export type RazorpayPayment = {
   id: string;
-  status: string;
+  entity?: string;
   amount: number;
   currency: string;
-  order_id: string;
+  status: string;
+  order_id?: string;
+  invoice_id?: string | null;
+  international?: boolean;
   method?: string;
-  captured?: boolean;
-  refund_status?: string | null;
   amount_refunded?: number;
+  refund_status?: string | null;
+  captured?: boolean;
+  description?: string;
+  email?: string;
+  contact?: string;
+  notes?: Record<string, string>;
+  created_at?: number;
 };
 
 export type RazorpayRefund = {
   id: string;
+  entity?: string;
   amount: number;
+  currency?: string;
+  payment_id?: string;
   status: string;
-  payment_id: string;
+  created_at?: number;
 };
 
 export type RazorpayTransfer = {
@@ -74,7 +85,8 @@ export type RazorpayTransfer = {
 };
 
 export type RazorpayTransferResponse = {
-  object: string;
+  entity?: string;
+  count?: number;
   items: RazorpayTransfer[];
 };
 
@@ -82,39 +94,76 @@ export class RazorpayError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly details?: unknown,
   ) {
     super(message);
     this.name = "RazorpayError";
   }
 }
 
-async function call<T>(path: string, init: RequestInit): Promise<T> {
+async function razorpayRequest<T>(
+  path: string,
+  init: RequestInit,
+): Promise<T> {
+  if (!isRazorpayConfigured()) {
+    throw new RazorpayError(
+      "Razorpay is not configured on the server.",
+      500,
+    );
+  }
+
   const response = await fetch(`${RAZORPAY_API}${path}`, {
     ...init,
     headers: {
+      Authorization: getAuthHeader(),
       "Content-Type": "application/json",
-      Authorization: authHeader(),
       ...(init.headers ?? {}),
     },
     cache: "no-store",
   });
 
-  const text = await response.text();
+  const responseText = await response.text();
 
-  const data = text
-    ? (JSON.parse(text) as Record<string, unknown>)
-    : {};
+  let data: unknown = {};
+
+  if (responseText) {
+    try {
+      data = JSON.parse(responseText);
+    } catch {
+      data = {
+        raw: responseText,
+      };
+    }
+  }
 
   if (!response.ok) {
+    let message = "Razorpay request failed.";
+
+    if (
+      typeof data === "object" &&
+      data !== null &&
+      "error" in data
+    ) {
+      const error = (
+        data as {
+          error?: {
+            description?: string;
+            code?: string;
+          };
+        }
+      ).error;
+
+      if (error?.description) {
+        message = error.description;
+      } else if (error?.code) {
+        message = error.code;
+      }
+    }
+
     throw new RazorpayError(
-      typeof data.error === "object" &&
-        data.error &&
-        "description" in data.error
-        ? String(
-            (data.error as { description: string }).description,
-          )
-        : "Razorpay request failed",
+      message,
       response.status,
+      data,
     );
   }
 
@@ -124,8 +173,8 @@ async function call<T>(path: string, init: RequestInit): Promise<T> {
 /**
  * Creates a Razorpay order.
  *
- * `amount` is provided in rupees by RideMate and converted
- * to paise before sending it to Razorpay.
+ * RideMate passes the amount in INR.
+ * Razorpay expects the amount in paise.
  */
 export async function createRazorpayOrder(input: {
   amount: number;
@@ -133,7 +182,14 @@ export async function createRazorpayOrder(input: {
   receipt: string;
   notes?: Record<string, string>;
 }): Promise<RazorpayOrder> {
-  return call<RazorpayOrder>("/orders", {
+  if (!Number.isFinite(input.amount) || input.amount <= 0) {
+    throw new RazorpayError(
+      "Invalid Razorpay order amount.",
+      400,
+    );
+  }
+
+  return razorpayRequest<RazorpayOrder>("/orders", {
     method: "POST",
     body: JSON.stringify({
       amount: Math.round(input.amount * 100),
@@ -144,10 +200,20 @@ export async function createRazorpayOrder(input: {
   });
 }
 
+/**
+ * Fetches a payment directly from Razorpay.
+ */
 export async function fetchRazorpayPayment(
   paymentId: string,
 ): Promise<RazorpayPayment> {
-  return call<RazorpayPayment>(
+  if (!paymentId) {
+    throw new RazorpayError(
+      "Razorpay payment ID is required.",
+      400,
+    );
+  }
+
+  return razorpayRequest<RazorpayPayment>(
     `/payments/${encodeURIComponent(paymentId)}`,
     {
       method: "GET",
@@ -155,31 +221,49 @@ export async function fetchRazorpayPayment(
   );
 }
 
+/**
+ * Creates a refund.
+ *
+ * If amount is omitted, Razorpay will refund the full payment.
+ */
 export async function createRazorpayRefund(input: {
   paymentId: string;
   amount?: number;
 }): Promise<RazorpayRefund> {
-  return call<RazorpayRefund>(
+  if (!input.paymentId) {
+    throw new RazorpayError(
+      "Razorpay payment ID is required.",
+      400,
+    );
+  }
+
+  const body: Record<string, unknown> = {
+    speed: "normal",
+  };
+
+  if (
+    input.amount !== undefined &&
+    Number.isFinite(input.amount) &&
+    input.amount > 0
+  ) {
+    body.amount = Math.round(input.amount * 100);
+  }
+
+  return razorpayRequest<RazorpayRefund>(
     `/payments/${encodeURIComponent(input.paymentId)}/refund`,
     {
       method: "POST",
-      body: JSON.stringify(
-        input.amount
-          ? {
-              amount: Math.round(input.amount * 100),
-              speed: "normal",
-            }
-          : {
-              speed: "normal",
-            },
-      ),
+      body: JSON.stringify(body),
     },
   );
 }
 
 /**
- * Creates a Razorpay Route transfer of `amount` (rupees)
- * from a captured payment to a driver's Linked Account ID.
+ * Creates a Razorpay Route transfer.
+ *
+ * IMPORTANT:
+ * The destination account must already be configured
+ * and approved in the Razorpay account.
  */
 export async function createRazorpayTransfer(input: {
   paymentId: string;
@@ -188,7 +272,28 @@ export async function createRazorpayTransfer(input: {
   currency?: string;
   notes?: Record<string, string>;
 }): Promise<RazorpayTransferResponse> {
-  return call<RazorpayTransferResponse>(
+  if (!input.paymentId) {
+    throw new RazorpayError(
+      "Payment ID is required for a transfer.",
+      400,
+    );
+  }
+
+  if (!input.account) {
+    throw new RazorpayError(
+      "Razorpay linked account is required.",
+      400,
+    );
+  }
+
+  if (!Number.isFinite(input.amount) || input.amount <= 0) {
+    throw new RazorpayError(
+      "Invalid transfer amount.",
+      400,
+    );
+  }
+
+  return razorpayRequest<RazorpayTransferResponse>(
     `/payments/${encodeURIComponent(input.paymentId)}/transfers`,
     {
       method: "POST",
@@ -206,10 +311,20 @@ export async function createRazorpayTransfer(input: {
   );
 }
 
+/**
+ * Fetches a Route transfer.
+ */
 export async function fetchRazorpayTransfer(
   transferId: string,
 ): Promise<RazorpayTransfer> {
-  return call<RazorpayTransfer>(
+  if (!transferId) {
+    throw new RazorpayError(
+      "Razorpay transfer ID is required.",
+      400,
+    );
+  }
+
+  return razorpayRequest<RazorpayTransfer>(
     `/transfers/${encodeURIComponent(transferId)}`,
     {
       method: "GET",
@@ -217,12 +332,15 @@ export async function fetchRazorpayTransfer(
   );
 }
 
-/* ------------------------------------------------------- signatures */
-
 /**
- * Verifies the Razorpay Checkout signature:
+ * Verifies the Razorpay Checkout signature.
  *
- * HMAC_SHA256(order_id + "|" + razorpay_payment_id, key_secret)
+ * Formula:
+ *
+ * HMAC_SHA256(
+ *   razorpay_order_id + "|" + razorpay_payment_id,
+ *   RAZORPAY_KEY_SECRET
+ * )
  */
 export function verifyPaymentSignature(input: {
   orderId: string;
@@ -235,16 +353,29 @@ export function verifyPaymentSignature(input: {
     return false;
   }
 
-  const expected = createHmac("sha256", secret)
+  if (
+    !input.orderId ||
+    !input.paymentId ||
+    !input.signature
+  ) {
+    return false;
+  }
+
+  const expectedSignature = createHmac(
+    "sha256",
+    secret,
+  )
     .update(`${input.orderId}|${input.paymentId}`)
     .digest("hex");
 
-  return safeEqual(expected, input.signature);
+  return safeCompare(
+    expectedSignature,
+    input.signature,
+  );
 }
 
 /**
- * Verifies the X-Razorpay-Signature header
- * of a webhook request.
+ * Verifies the X-Razorpay-Signature webhook header.
  */
 export function verifyWebhookSignature(
   rawBody: string,
@@ -256,30 +387,35 @@ export function verifyWebhookSignature(
     return false;
   }
 
-  const expected = createHmac("sha256", secret)
+  const expectedSignature = createHmac(
+    "sha256",
+    secret,
+  )
     .update(rawBody)
     .digest("hex");
 
-  return safeEqual(expected, signature);
+  return safeCompare(
+    expectedSignature,
+    signature,
+  );
 }
 
-function safeEqual(a: string, b: string): boolean {
-  const bufferA = Buffer.from(a);
-  const bufferB = Buffer.from(b);
+function safeCompare(
+  expected: string,
+  actual: string,
+): boolean {
+  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(actual);
 
-  if (bufferA.length !== bufferB.length) {
+  if (
+    expectedBuffer.length !==
+    actualBuffer.length
+  ) {
     return false;
   }
 
-  return timingSafeEqual(bufferA, bufferB);
+  return timingSafeEqual(
+    expectedBuffer,
+    actualBuffer,
+  );
 }
-
-/*
- * The payment flow intentionally uses official Razorpay Checkout.
- *
- * There is no simulator, fake payment-success path, or
- * simulated signature.
- *
- * Payments must be created through Razorpay and verified
- * server-side using RAZORPAY_KEY_SECRET.
- */
